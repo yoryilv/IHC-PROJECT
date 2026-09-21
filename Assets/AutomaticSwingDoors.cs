@@ -59,4 +59,4 @@ public class AutomaticSwingDoors : MonoBehaviour
             isPlayerInside = false;
         }
     }
-}Wheel
+}
