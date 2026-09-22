@@ -3,12 +3,21 @@ using UnityEngine;
 [RequireComponent(typeof(CharacterController))]
 public class WheelchairController : MonoBehaviour
 {
-    [Header("Velocidad")]
-    public float moveSpeed = 1.5f;       // ~1.5 m/s (velocidad realista en silla de ruedas)
-    public float turnSpeed = 65f;        // Grados por segundo de giro
+    [Header("Ruedas Físicas")]
+    public WheelInteraction leftWheel;
+    public WheelInteraction rightWheel;
 
-    [Header("Físicas")]
+    [Header("Dimensiones Silla")]
+    [Tooltip("Distancia entre ambas ruedas en metros")]
+    public float trackWidth = 0.65f;
+
+    [Header("Límites de Movimiento")]
+    public float maxSpeed = 2.0f;           // m/s
     public float gravity = -9.81f;
+
+    [Header("Modo Simulación (Sin Visor)")]
+    public bool enableKeyboardFallback = true;
+    public float keyboardDriveSpeed = 1.5f;
 
     private CharacterController controller;
     private float verticalVelocity;
@@ -20,36 +29,51 @@ public class WheelchairController : MonoBehaviour
 
     void Update()
     {
-        // 1. Entrada de control (compatible con mandos Quest y teclado para el Simulador)
-        Vector2 leftStick = OVRInput.Get(OVRInput.Axis2D.PrimaryThumbstick);
-        Vector2 rightStick = OVRInput.Get(OVRInput.Axis2D.SecondaryThumbstick);
+        // 1. Simulación por teclado si no se está usando el agarre físico
+        if (enableKeyboardFallback)
+        {
+            float v = Input.GetAxis("Vertical");   // W / S
+            float h = Input.GetAxis("Horizontal"); // A / D
 
-        float forwardInput = Input.GetAxis("Vertical");
-        float turnInput = Input.GetAxis("Horizontal");
+            if (Mathf.Abs(v) > 0.05f || Mathf.Abs(h) > 0.05f)
+            {
+                float leftTarget = (v - h * 0.5f) * keyboardDriveSpeed;
+                float rightTarget = (v + h * 0.5f) * keyboardDriveSpeed;
 
-        // Priorizar joystick si se detecta movimiento en el mando
-        if (Mathf.Abs(leftStick.y) > 0.1f) forwardInput = leftStick.y;
-        if (Mathf.Abs(rightStick.x) > 0.1f) turnInput = rightStick.x;
+                if (leftWheel != null) leftWheel.InjectVelocity(leftTarget);
+                if (rightWheel != null) rightWheel.InjectVelocity(rightTarget);
+            }
+        }
 
-        // 2. Rotación sobre su propio eje (giro de la silla)
-        transform.Rotate(0, turnInput * turnSpeed * Time.deltaTime, 0);
+        // 2. Obtener velocidades lineales de cada rueda
+        float vLeft = leftWheel != null ? leftWheel.LinearVelocity : 0f;
+        float vRight = rightWheel != null ? rightWheel.LinearVelocity : 0f;
 
-        // 3. Desplazamiento frontal
-        Vector3 move = transform.forward * (forwardInput * moveSpeed);
+        // 3. Cinemática diferencial
+        // Velocidad lineal hacia adelante = promedio de ambas ruedas
+        float linearSpeed = (vLeft + vRight) / 2f;
+        linearSpeed = Mathf.Clamp(linearSpeed, -maxSpeed, maxSpeed);
 
-        // 4. Gravedad y adherencia a rampas
+        // Velocidad angular de rotación = diferencia entre ruedas / ancho de vía
+        float angularVelocity = (vRight - vLeft) / trackWidth; // rad/s
+        float turnDegrees = (angularVelocity * Mathf.Rad2Deg) * Time.deltaTime;
+
+        // 4. Aplicar rotación sobre su eje
+        transform.Rotate(0, turnDegrees, 0);
+
+        // 5. Aplicar desplazamiento y gravedad
         if (controller.isGrounded && verticalVelocity < 0)
         {
-            verticalVelocity = -2f; // Fuerza descendente leve para no flotar al bajar rampas
+            verticalVelocity = -2f; // Adherencia al suelo/rampas
         }
         else
         {
             verticalVelocity += gravity * Time.deltaTime;
         }
 
+        Vector3 move = (transform.forward * linearSpeed);
         move.y = verticalVelocity;
 
-        // 5. Aplicar traslación física
         controller.Move(move * Time.deltaTime);
     }
 }
