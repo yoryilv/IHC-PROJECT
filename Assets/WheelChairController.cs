@@ -1,5 +1,22 @@
 using UnityEngine;
 
+/// <summary>
+/// Controlador de locomoción de silla de ruedas basado en cinemática diferencial.
+///
+/// Lee la velocidad lineal de cada WheelInteraction (calculada a partir del
+/// delta angular del OneGrabRotateTransformer) y aplica movimiento y giro
+/// al CharacterController del chasis.
+///
+/// JERARQUÍA ESPERADA:
+///   Player_Wheelchair (este script + CharacterController)
+///   ├── OVRCameraRig
+///   │   └── TrackingSpace → CenterEyeAnchor, HandAnchors...
+///   ├── WhelChair (malla visual estática)
+///   └── Interactables
+///       ├── WheelGrabbable_L (Grabbable + HandGrabInteractable +
+///       │                      OneGrabRotateTransformer + WheelInteraction)
+///       └── WheelGrabbable_R (ídem)
+/// </summary>
 [RequireComponent(typeof(CharacterController))]
 public class WheelchairController : MonoBehaviour
 {
@@ -13,10 +30,11 @@ public class WheelchairController : MonoBehaviour
 
     [Header("Límites de Movimiento")]
     public float maxSpeed = 2.0f;           // m/s
+    public float maxTurnRate = 90.0f;       // grados/s — límite de giro para evitar trompo
     public float gravity = -9.81f;
 
     [Header("Modo Simulación (Sin Visor)")]
-    public bool enableKeyboardFallback = true;
+    public bool enableKeyboardFallback = false;
     public float keyboardDriveSpeed = 1.5f;
 
     private CharacterController controller;
@@ -29,7 +47,7 @@ public class WheelchairController : MonoBehaviour
 
     void Update()
     {
-        // 1. Simulación por teclado si no se está usando el agarre físico
+        // 1. Simulación por teclado (solo para pruebas en Editor sin visor)
         if (enableKeyboardFallback)
         {
             float v = Input.GetAxis("Vertical");   // W / S
@@ -45,24 +63,29 @@ public class WheelchairController : MonoBehaviour
             }
         }
 
-        // 2. Obtener velocidades lineales de cada rueda
+        // 2. Leer velocidades lineales de cada rueda (calculadas por WheelInteraction
+        //    a partir del delta angular del OneGrabRotateTransformer)
         float vLeft = leftWheel != null ? leftWheel.LinearVelocity : 0f;
         float vRight = rightWheel != null ? rightWheel.LinearVelocity : 0f;
 
         // 3. Cinemática diferencial
-        // Velocidad lineal hacia adelante = promedio de ambas ruedas
-        float linearSpeed = (vLeft + vRight) / 2f;
+        // Velocidad lineal = promedio de ambas ruedas
+        float linearSpeed = (vLeft + vRight) * 0.5f;
         linearSpeed = Mathf.Clamp(linearSpeed, -maxSpeed, maxSpeed);
 
-        // Velocidad angular de rotación = diferencia entre ruedas / ancho de vía
-        float angularVelocity = (vRight - vLeft) / trackWidth; // rad/s
-        float turnDegrees = (angularVelocity * Mathf.Rad2Deg) * Time.deltaTime;
+        // Velocidad angular = diferencia / ancho de vía (rad/s)
+        float angularVelocity = (vRight - vLeft) / trackWidth;
+        float turnDegrees = angularVelocity * Mathf.Rad2Deg * Time.deltaTime;
 
-        // 4. Aplicar rotación sobre su eje
-        transform.Rotate(0, turnDegrees, 0);
+        // Clamp de giro para seguridad anti-trompo
+        turnDegrees = Mathf.Clamp(turnDegrees, -maxTurnRate * Time.deltaTime,
+                                                 maxTurnRate * Time.deltaTime);
 
-        // 5. Aplicar desplazamiento y gravedad
-        if (controller.isGrounded && verticalVelocity < 0)
+        // 4. Aplicar rotación sobre el eje Y
+        transform.Rotate(0f, turnDegrees, 0f);
+
+        // 5. Gravedad
+        if (controller.isGrounded && verticalVelocity < 0f)
         {
             verticalVelocity = -2f; // Adherencia al suelo/rampas
         }
@@ -71,9 +94,9 @@ public class WheelchairController : MonoBehaviour
             verticalVelocity += gravity * Time.deltaTime;
         }
 
-        Vector3 move = (transform.forward * linearSpeed);
+        // 6. Desplazamiento final
+        Vector3 move = transform.forward * linearSpeed;
         move.y = verticalVelocity;
-
         controller.Move(move * Time.deltaTime);
     }
 }
