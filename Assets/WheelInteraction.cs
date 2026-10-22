@@ -43,10 +43,10 @@ public class WheelInteraction : MonoBehaviour
 
     [Header("Inercia / Impulso (nuevo)")]
     [Tooltip("Multiplicador de ganancia del empuje del aro (compensa que una mano empuja en arcos cortos)")]
-    public float pushGain = 1.6f;
+    [SerializeField] public float pushGain = 1.25f;
 
-    [Tooltip("Resistencia de rodadura al soltar (rad/s²). ~0.3-0.6 = coasting realista")]
-    public float rollingResistance = 0.4f;
+    [Tooltip("Resistencia de rodadura al soltar (rad/s²). ~0.8 = coasting realista")]
+    [SerializeField] public float rollingResistance = 0.8f;
 
     [Tooltip("Frenado cuando la mano agarra el aro y se queda quieta o va en contra (rad/s²)")]
     public float handBrake = 6.0f;
@@ -80,6 +80,8 @@ public class WheelInteraction : MonoBehaviour
 
     void Update()
     {
+        // SelectingPointsCount cuenta cualquier interactor que sujete el aro:
+        // HandGrabInteractor (manos libres), ControllerGrabInteractor / GrabInteractor (mandos, Grip/Trigger).
         bool currentlyGrabbed = _grabbable != null
                              && _grabbable.SelectingPointsCount > 0;
 
@@ -224,15 +226,4 @@ public class WheelInteraction : MonoBehaviour
     public void InjectVelocity(float linearSpeed)
     {
         _currentAngularVelocity = linearSpeed / wheelRadius;
-    }
-
-    /// <summary>
-    /// Propulsión por joystick con aceleración limitada (m/s² lineal) hacia una velocidad objetivo.
-    /// </summary>
-    public void DriveToward(float targetLinearSpeed, float linearAccel)
-    {
-        float target = Mathf.Clamp(targetLinearSpeed / wheelRadius, -maxAngularSpeed, maxAngularSpeed);
-        _currentAngularVelocity = Mathf.MoveTowards(_currentAngularVelocity, target,
-            (linearAccel / wheelRadius) * Time.deltaTime);
-    }
 }

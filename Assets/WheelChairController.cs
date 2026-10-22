@@ -37,13 +37,6 @@ public class WheelchairController : MonoBehaviour
     public bool enableKeyboardFallback = false;
     public float keyboardDriveSpeed = 1.5f;
 
-    [Header("Joystick (Thumbstick izquierdo)")]
-    public bool enableJoystick = true;
-    [Range(0f, 0.3f)] public float stickDeadzone = 0.1f;
-    [Tooltip("Aceleración lineal m/s² con joystick")]
-    public float joystickAccel = 2.5f;
-    [Tooltip("Velocidad lineal máxima con joystick (m/s)")]
-    public float joystickMaxSpeed = 2.0f;
 
     private CharacterController controller;
     private float verticalVelocity;
@@ -68,21 +61,6 @@ public class WheelchairController : MonoBehaviour
 
                 if (leftWheel != null) leftWheel.InjectVelocity(leftTarget);
                 if (rightWheel != null) rightWheel.InjectVelocity(rightTarget);
-            }
-        }
-
-        // 1b. Joystick: deadzone radial + reescalado lineal (sin curva que ahogue valores bajos)
-        if (enableJoystick)
-        {
-            Vector2 stick = OVRInput.Get(OVRInput.Axis2D.PrimaryThumbstick);
-            float mag = stick.magnitude;
-            if (mag > stickDeadzone)
-            {
-                stick = stick.normalized * Mathf.Clamp01((mag - stickDeadzone) / (1f - stickDeadzone));
-                float fwd = stick.y * joystickMaxSpeed;
-                float turn = stick.x * joystickMaxSpeed * 0.5f;
-                if (leftWheel != null) leftWheel.DriveToward(fwd + turn, joystickAccel);
-                if (rightWheel != null) rightWheel.DriveToward(fwd - turn, joystickAccel);
             }
         }
 
