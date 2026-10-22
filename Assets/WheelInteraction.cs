@@ -41,6 +41,21 @@ public class WheelInteraction : MonoBehaviour
     [Tooltip("Delta angular mínimo en grados por frame para registrar movimiento")]
     public float angularDeadzone = 0.1f;
 
+    [Header("Inercia / Impulso (nuevo)")]
+    [Tooltip("Multiplicador de ganancia del empuje del aro (compensa que una mano empuja en arcos cortos)")]
+    public float pushGain = 1.6f;
+
+    [Tooltip("Resistencia de rodadura al soltar (rad/s²). ~0.3-0.6 = coasting realista")]
+    public float rollingResistance = 0.4f;
+
+    [Tooltip("Frenado cuando la mano agarra el aro y se queda quieta o va en contra (rad/s²)")]
+    public float handBrake = 6.0f;
+
+    [Tooltip("Segundos de mano quieta antes de empezar a frenar (permite reagarrar para otra brazada)")]
+    public float brakeDelay = 0.15f;
+
+    private float _stillTime;
+
     // ── Estado interno ──
     private Grabbable _grabbable;
     private Quaternion _lastLocalRot;
@@ -132,26 +147,39 @@ public class WheelInteraction : MonoBehaviour
 
         if (Time.deltaTime > 0f && Mathf.Abs(signedDeltaDeg) > angularDeadzone)
         {
-            float rawAngularVelocity = (signedDeltaDeg * Mathf.Deg2Rad) / Time.deltaTime;
+            _stillTime = 0f;
+            float raw = (signedDeltaDeg * Mathf.Deg2Rad) / Time.deltaTime * pushGain;
+            raw = Mathf.Clamp(raw, -maxAngularSpeed, maxAngularSpeed);
 
-            // Suavizado exponencial + clamp
-            _currentAngularVelocity = Mathf.Lerp(
-                _currentAngularVelocity,
-                rawAngularVelocity,
-                smoothingRate * Time.deltaTime
-            );
-            _currentAngularVelocity = Mathf.Clamp(
-                _currentAngularVelocity,
-                -maxAngularSpeed,
-                maxAngularSpeed
-            );
+            bool sameDir = Mathf.Sign(raw) == Mathf.Sign(_currentAngularVelocity)
+                           || Mathf.Abs(_currentAngularVelocity) < 0.01f;
+
+            if (sameDir && Mathf.Abs(raw) >= Mathf.Abs(_currentAngularVelocity))
+            {
+                // ATAQUE: la mano acelera el aro -> seguir casi instantáneo (sin lag de Lerp)
+                _currentAngularVelocity = Mathf.Lerp(_currentAngularVelocity, raw,
+                    1f - Mathf.Exp(-smoothingRate * 3f * Time.deltaTime));
+            }
+            else if (sameDir)
+            {
+                // Mano más lenta que la silla: NO frenar, solo coasting (la mano no es freno)
+                _currentAngularVelocity = Mathf.MoveTowards(_currentAngularVelocity, 0f,
+                    rollingResistance * Time.deltaTime);
+            }
+            else
+            {
+                // Mano en contra: frenado activo
+                _currentAngularVelocity = Mathf.MoveTowards(_currentAngularVelocity, raw,
+                    handBrake * Time.deltaTime);
+            }
         }
-        else if (Mathf.Abs(signedDeltaDeg) <= angularDeadzone)
+        else
         {
-            // Mano quieta mientras agarra: frenar suavemente
-            _currentAngularVelocity = Mathf.MoveTowards(
-                _currentAngularVelocity, 0f, friction * 2f * Time.deltaTime
-            );
+            // Mano quieta agarrando: coasting y, tras un breve delay, freno
+            _stillTime += Time.deltaTime;
+            float decel = _stillTime > brakeDelay ? handBrake : rollingResistance;
+            _currentAngularVelocity = Mathf.MoveTowards(_currentAngularVelocity, 0f,
+                decel * Time.deltaTime);
         }
 
         _lastLocalRot = currentLocalRot;
@@ -172,9 +200,9 @@ public class WheelInteraction : MonoBehaviour
             _graceFrames = 0;
         }
 
-        // Fricción pasiva: la silla desacelera al soltar
+        // Resistencia de rodadura: la silla sigue rodando al soltar
         _currentAngularVelocity = Mathf.MoveTowards(
-            _currentAngularVelocity, 0f, friction * Time.deltaTime
+            _currentAngularVelocity, 0f, rollingResistance * Time.deltaTime
         );
     }
 
@@ -196,5 +224,15 @@ public class WheelInteraction : MonoBehaviour
     public void InjectVelocity(float linearSpeed)
     {
         _currentAngularVelocity = linearSpeed / wheelRadius;
+    }
+
+    /// <summary>
+    /// Propulsión por joystick con aceleración limitada (m/s² lineal) hacia una velocidad objetivo.
+    /// </summary>
+    public void DriveToward(float targetLinearSpeed, float linearAccel)
+    {
+        float target = Mathf.Clamp(targetLinearSpeed / wheelRadius, -maxAngularSpeed, maxAngularSpeed);
+        _currentAngularVelocity = Mathf.MoveTowards(_currentAngularVelocity, target,
+            (linearAccel / wheelRadius) * Time.deltaTime);
     }
 }
