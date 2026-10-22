@@ -43,18 +43,19 @@ public class WheelInteraction : MonoBehaviour
 
     [Header("Inercia / Impulso (nuevo)")]
     [Tooltip("Multiplicador de ganancia del empuje del aro (compensa que una mano empuja en arcos cortos)")]
-    [SerializeField] public float pushGain = 1.25f;
+    [SerializeField] public float pushGain = 0.88f;
 
-    [Tooltip("Resistencia de rodadura al soltar (rad/s²). ~0.8 = coasting realista")]
-    [SerializeField] public float rollingResistance = 0.8f;
+    [Tooltip("Resistencia de rodadura al soltar (rad/s²). ~1.0 = coasting corto y realista")]
+    [SerializeField] public float rollingResistance = 1.0f;
 
-    [Tooltip("Frenado cuando la mano agarra el aro y se queda quieta o va en contra (rad/s²)")]
-    public float handBrake = 6.0f;
+    [Tooltip("Desaceleración base por rozamiento manual al sujetar el aro (rad/s²)")]
+    [SerializeField] public float handBrakeDecel = 3.5f;
 
-    [Tooltip("Segundos de mano quieta antes de empezar a frenar (permite reagarrar para otra brazada)")]
-    public float brakeDelay = 0.15f;
+    [Tooltip("Rampa del freno: cuánto crece la fuerza por segundo sujeto (x handBrakeDecel). Arranca suave y se intensifica")]
+    [SerializeField] public float progressiveBrakeRate = 2.0f;
 
-    private float _stillTime;
+    private const float MaxBrakeRamp = 4f;
+    private float _brakeTime;
 
     // ── Estado interno ──
     private Grabbable _grabbable;
@@ -149,7 +150,6 @@ public class WheelInteraction : MonoBehaviour
 
         if (Time.deltaTime > 0f && Mathf.Abs(signedDeltaDeg) > angularDeadzone)
         {
-            _stillTime = 0f;
             float raw = (signedDeltaDeg * Mathf.Deg2Rad) / Time.deltaTime * pushGain;
             raw = Mathf.Clamp(raw, -maxAngularSpeed, maxAngularSpeed);
 
@@ -158,30 +158,37 @@ public class WheelInteraction : MonoBehaviour
 
             if (sameDir && Mathf.Abs(raw) >= Mathf.Abs(_currentAngularVelocity))
             {
-                // ATAQUE: la mano acelera el aro -> seguir casi instantáneo (sin lag de Lerp)
+                // ATAQUE: el empuje cancela el freno y transfiere tracción
+                _brakeTime = 0f;
                 _currentAngularVelocity = Mathf.Lerp(_currentAngularVelocity, raw,
                     1f - Mathf.Exp(-smoothingRate * 3f * Time.deltaTime));
             }
             else if (sameDir)
             {
-                // Mano más lenta que la silla: NO frenar, solo coasting (la mano no es freno)
+                // Mano más lenta que la silla pero empujando: NO frenar, solo coasting
+                _brakeTime = 0f;
                 _currentAngularVelocity = Mathf.MoveTowards(_currentAngularVelocity, 0f,
                     rollingResistance * Time.deltaTime);
             }
             else
             {
-                // Mano en contra: frenado activo
-                _currentAngularVelocity = Mathf.MoveTowards(_currentAngularVelocity, raw,
-                    handBrake * Time.deltaTime);
+                // Mano en contra: frenado progresivo hacia la velocidad de la mano
+                ApplyProgressiveBrake(raw);
             }
         }
         else
         {
-            // Mano quieta agarrando: coasting y, tras un breve delay, freno
-            _stillTime += Time.deltaTime;
-            float decel = _stillTime > brakeDelay ? handBrake : rollingResistance;
-            _currentAngularVelocity = Mathf.MoveTowards(_currentAngularVelocity, 0f,
-                decel * Time.deltaTime);
+            // Mano quieta agarrando: si hay inercia, frenado progresivo; si no, solo rodadura
+            if (Mathf.Abs(_currentAngularVelocity) > 0.1f)
+            {
+                ApplyProgressiveBrake(0f);
+            }
+            else
+            {
+                _brakeTime = 0f;
+                _currentAngularVelocity = Mathf.MoveTowards(_currentAngularVelocity, 0f,
+                    rollingResistance * Time.deltaTime);
+            }
         }
 
         _lastLocalRot = currentLocalRot;
@@ -203,9 +210,25 @@ public class WheelInteraction : MonoBehaviour
         }
 
         // Resistencia de rodadura: la silla sigue rodando al soltar
+        _brakeTime = 0f;
         _currentAngularVelocity = Mathf.MoveTowards(
             _currentAngularVelocity, 0f, rollingResistance * Time.deltaTime
         );
+    }
+
+    /// <summary>
+    /// Frenado progresivo por rozamiento de mano: la desaceleración arranca suave
+    /// (40% de handBrakeDecel) y crece linealmente con el tiempo sujeto
+    /// (+progressiveBrakeRate * handBrakeDecel por segundo), hasta detener la rueda.
+    /// Con los valores por defecto frena entre ~0.4 s y ~0.8 s para 1–4 rad/s.
+    /// </summary>
+    private void ApplyProgressiveBrake(float targetVelocity)
+    {
+        _brakeTime += Time.deltaTime;
+        float ramp = Mathf.Min(0.4f + progressiveBrakeRate * _brakeTime, MaxBrakeRamp);
+        float brakeForce = handBrakeDecel * ramp + rollingResistance;
+        _currentAngularVelocity = Mathf.MoveTowards(_currentAngularVelocity, targetVelocity,
+            brakeForce * Time.deltaTime);
     }
 
     /// <summary>
