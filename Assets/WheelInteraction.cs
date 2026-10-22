@@ -49,10 +49,10 @@ public class WheelInteraction : MonoBehaviour
     [SerializeField] public float rollingResistance = 1.0f;
 
     [Tooltip("Desaceleración base por rozamiento manual al sujetar el aro (rad/s²)")]
-    [SerializeField] public float handBrakeDecel = 3.5f;
+    [SerializeField] public float handBrakeDecel = 5.8f;
 
     [Tooltip("Rampa del freno: cuánto crece la fuerza por segundo sujeto (x handBrakeDecel). Arranca suave y se intensifica")]
-    [SerializeField] public float progressiveBrakeRate = 2.0f;
+    [SerializeField] public float progressiveBrakeRate = 3.0f;
 
     private const float MaxBrakeRamp = 4f;
     private float _brakeTime;
@@ -218,14 +218,14 @@ public class WheelInteraction : MonoBehaviour
 
     /// <summary>
     /// Frenado progresivo por rozamiento de mano: la desaceleración arranca suave
-    /// (40% de handBrakeDecel) y crece linealmente con el tiempo sujeto
+    /// (70% de handBrakeDecel) y crece linealmente con el tiempo sujeto
     /// (+progressiveBrakeRate * handBrakeDecel por segundo), hasta detener la rueda.
-    /// Con los valores por defecto frena entre ~0.4 s y ~0.8 s para 1–4 rad/s.
+    /// Con los valores por defecto frena ~40% más rápido que antes.
     /// </summary>
     private void ApplyProgressiveBrake(float targetVelocity)
     {
         _brakeTime += Time.deltaTime;
-        float ramp = Mathf.Min(0.4f + progressiveBrakeRate * _brakeTime, MaxBrakeRamp);
+        float ramp = Mathf.Min(0.7f + progressiveBrakeRate * _brakeTime, MaxBrakeRamp);
         float brakeForce = handBrakeDecel * ramp + rollingResistance;
         _currentAngularVelocity = Mathf.MoveTowards(_currentAngularVelocity, targetVelocity,
             brakeForce * Time.deltaTime);
@@ -249,4 +249,5 @@ public class WheelInteraction : MonoBehaviour
     public void InjectVelocity(float linearSpeed)
     {
         _currentAngularVelocity = linearSpeed / wheelRadius;
+    }
 }
