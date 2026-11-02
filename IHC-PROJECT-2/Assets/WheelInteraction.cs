@@ -1,3 +1,4 @@
+using System.Collections;
 using UnityEngine;
 using Oculus.Interaction;
 
@@ -7,16 +8,6 @@ using Oculus.Interaction;
 ///
 /// ARQUITECTURA: El SDK de Meta resuelve el arco del agarre internamente.
 /// Este script NUNCA rastrea posiciones de mano — solo lee la rotación resultante.
-///
-/// REQUISITOS en el Inspector para cada WheelGrabbable_L/R:
-///   1. Grabbable              → OneGrabTransformer = (este mismo GO con OneGrabRotateTransformer)
-///   2. HandGrabInteractable   → (ya existente)
-///   3. OneGrabRotateTransformer → Rotation Axis = Right (eje X local)
-///                                 Constraints: MinAngle.Constrain = false
-///                                              MaxAngle.Constrain = false
-///   4. Rigidbody              → Is Kinematic = true, Use Gravity = false
-///   5. CapsuleCollider        → Is Trigger = true
-///   6. WheelInteraction (este script)
 /// </summary>
 public class WheelInteraction : MonoBehaviour
 {
@@ -28,9 +19,6 @@ public class WheelInteraction : MonoBehaviour
     [Tooltip("Radio del aro en metros")]
     public float wheelRadius = 0.3f;
 
-    [Tooltip("Desaceleración al soltar (rad/s²)")]
-    public float friction = 2.0f;
-
     [Tooltip("Velocidad angular máxima permitida (rad/s)")]
     public float maxAngularSpeed = 15.0f;
 
@@ -41,27 +29,41 @@ public class WheelInteraction : MonoBehaviour
     [Tooltip("Delta angular mínimo en grados por frame para registrar movimiento")]
     public float angularDeadzone = 0.1f;
 
-    [Header("Inercia / Impulso (nuevo)")]
-    [Tooltip("Multiplicador de ganancia del empuje del aro (compensa que una mano empuja en arcos cortos)")]
-    [SerializeField] public float pushGain = 0.72f; // Antes 1.25f: baja la fuerza del empuje para no dispararse hacia adelante
+    [Header("Inercia e Impulso")]
+    [Tooltip("Multiplicador de ganancia del empuje del aro (compensa brazadas cortas)")]
+    [SerializeField] public float pushGain = 0.72f;
 
-    [Tooltip("Resistencia de rodadura al soltar (rad/s²). ~0.8 = coasting realista")]
+    [Tooltip("Resistencia de rodadura al soltar (rad/s²). ~4.5 = detención controlada")]
     [SerializeField] public float rollingResistance = 4.5f;
 
     [Tooltip("Frenado cuando la mano agarra el aro y se queda quieta o va en contra (rad/s²)")]
-    public float handBrake = 9.5f; // Antes 6.0f: muerde con mucha más fuerza al sujetar el aro
+    public float handBrake = 9.5f;
 
-    [Tooltip("Segundos de mano quieta antes de empezar a frenar (permite reagarrar para otra brazada)")]
-    public float brakeDelay = 0.04f; // Antes 0.15f: empieza a frenar de inmediato al contacto sin esperar
+    [Tooltip("Segundos de mano quieta antes de empezar a frenar")]
+    public float brakeDelay = 0.04f;
 
-    private float _stillTime;
+    [Header("Feedback Háptico")]
+    [Tooltip("Marca TRUE en la rueda izquierda, FALSE en la rueda derecha")]
+    [SerializeField] private bool _isLeftHand = false;
 
-    // ── Estado interno ──
+    [Tooltip("Intensidad de vibración (0.1 a 1.0)")]
+    [Range(0f, 1f)]
+    [SerializeField] private float _hapticStrength = 0.6f;
+
+    [Tooltip("Duración del pulso háptico en segundos")]
+    [SerializeField] private float _hapticDuration = 0.12f;
+
+    // ── Estado interno de Háptica ──
+    private bool _wasGrabbedLastFrame = false;
+    private Coroutine _hapticCoroutine;
+
+    // ── Estado interno de Cinemática ──
     private Grabbable _grabbable;
     private Quaternion _lastLocalRot;
     private float _currentAngularVelocity;   // rad/s (positivo = forward)
     private bool _wasGrabbed;
     private int _graceFrames;
+    private float _stillTime;
 
     // Rotación original del interactable (para restaurar al soltar)
     private Quaternion _restLocalRotation;
@@ -80,10 +82,15 @@ public class WheelInteraction : MonoBehaviour
 
     void Update()
     {
-        // SelectingPointsCount cuenta cualquier interactor que sujete el aro:
-        // HandGrabInteractor (manos libres), ControllerGrabInteractor / GrabInteractor (mandos, Grip/Trigger).
-        bool currentlyGrabbed = _grabbable != null
-                             && _grabbable.SelectingPointsCount > 0;
+        // SelectingPointsCount detecta agarraderas de mandos o manos libres
+        bool currentlyGrabbed = _grabbable != null && _grabbable.SelectingPointsCount > 0;
+
+        // Disparo háptico en el frame exacto de sujeción inicial
+        if (currentlyGrabbed && !_wasGrabbedLastFrame)
+        {
+            TriggerHapticFeedback();
+        }
+        _wasGrabbedLastFrame = currentlyGrabbed;
 
         if (currentlyGrabbed)
         {
@@ -107,7 +114,6 @@ public class WheelInteraction : MonoBehaviour
 
         if (!_wasGrabbed)
         {
-            // Primer frame de agarre: inicializar sin producir delta
             _wasGrabbed = true;
             _lastLocalRot = currentLocalRot;
             _graceFrames = 0;
@@ -116,31 +122,21 @@ public class WheelInteraction : MonoBehaviour
 
         _graceFrames++;
 
-        // Grace period: dejar que el transformer estabilice el agarre
+        // Grace period para estabilización del transformer
         if (_graceFrames <= 2)
         {
             _lastLocalRot = currentLocalRot;
             return;
         }
 
-        // Calcular delta angular entre el frame anterior y el actual
-        // Quaternion delta = Qcurrent * Inverse(Qlast)
-        // Esto nos da la rotación incremental aplicada por el transformer
         Quaternion deltaRot = currentLocalRot * Quaternion.Inverse(_lastLocalRot);
-
-        // Descomponer el delta en ángulo-eje
         deltaRot.ToAngleAxis(out float deltaAngleDeg, out Vector3 axis);
 
-        // Normalizar ángulo a rango [-180, 180]
         if (deltaAngleDeg > 180f) deltaAngleDeg -= 360f;
 
-        // El transformer rota sobre el eje Right (X local).
-        // El signo del eje X determina la dirección de propulsión.
-        // axis.x > 0 → rotación positiva en X → avance (convención)
         float signedDeltaDeg = deltaAngleDeg * Mathf.Sign(axis.x);
 
-        // Filtro anti-glitch: descartar saltos mayores a 45°/frame
-        // (imposible con movimiento humano real a 72+ FPS)
+        // Filtro anti-glitch para descartar saltos mayores a 45° por frame
         if (Mathf.Abs(signedDeltaDeg) > 45f)
         {
             _lastLocalRot = currentLocalRot;
@@ -158,26 +154,26 @@ public class WheelInteraction : MonoBehaviour
 
             if (sameDir && Mathf.Abs(raw) >= Mathf.Abs(_currentAngularVelocity))
             {
-                // ATAQUE: la mano acelera el aro -> seguir casi instantáneo (sin lag de Lerp)
+                // Ataque de empuje
                 _currentAngularVelocity = Mathf.Lerp(_currentAngularVelocity, raw,
                     1f - Mathf.Exp(-smoothingRate * 3f * Time.deltaTime));
             }
             else if (sameDir)
             {
-                // Mano más lenta que la silla: NO frenar, solo coasting (la mano no es freno)
+                // Desaceleración por rodadura si la mano va más lenta
                 _currentAngularVelocity = Mathf.MoveTowards(_currentAngularVelocity, 0f,
                     rollingResistance * Time.deltaTime);
             }
             else
             {
-                // Mano en contra: frenado activo
+                // Mano frenando o empujando en sentido contrario
                 _currentAngularVelocity = Mathf.MoveTowards(_currentAngularVelocity, raw,
                     handBrake * Time.deltaTime);
             }
         }
         else
         {
-            // Mano quieta agarrando: coasting y, tras un breve delay, freno
+            // Mano estática sujetando el aro
             _stillTime += Time.deltaTime;
             float decel = _stillTime > brakeDelay ? handBrake : rollingResistance;
             _currentAngularVelocity = Mathf.MoveTowards(_currentAngularVelocity, 0f,
@@ -188,29 +184,22 @@ public class WheelInteraction : MonoBehaviour
     }
 
     /// <summary>
-    /// Al soltar: aplicar fricción pasiva y restaurar rotación del interactable
-    /// para que el collider/trigger vuelva a su posición original de agarre.
+    /// Aplica desaceleración pasiva y restablece la orientación del collider de agarre.
     /// </summary>
     private void HandleReleased()
     {
         if (_wasGrabbed)
         {
-            // Restaurar la rotación local original del interactable
-            // para que el trigger vuelva a la posición de agarre óptima
             transform.localRotation = _restLocalRotation;
             _wasGrabbed = false;
             _graceFrames = 0;
         }
 
-        // Resistencia de rodadura: la silla sigue rodando al soltar
         _currentAngularVelocity = Mathf.MoveTowards(
             _currentAngularVelocity, 0f, rollingResistance * Time.deltaTime
         );
     }
 
-    /// <summary>
-    /// Rota la malla visual de la rueda para feedback al usuario.
-    /// </summary>
     private void UpdateVisualWheel()
     {
         if (wheelMeshPivot != null)
@@ -220,11 +209,35 @@ public class WheelInteraction : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Permite inyectar velocidad desde teclado (modo simulación sin visor).
-    /// </summary>
     public void InjectVelocity(float linearSpeed)
     {
         _currentAngularVelocity = linearSpeed / wheelRadius;
+    }
+
+    // ── Subsistema Háptico ──
+
+    private void TriggerHapticFeedback()
+    {
+        OVRInput.Controller targetController = _isLeftHand ? OVRInput.Controller.LTouch : OVRInput.Controller.RTouch;
+
+        if (_hapticCoroutine != null)
+        {
+            StopCoroutine(_hapticCoroutine);
+        }
+
+        _hapticCoroutine = StartCoroutine(HapticPulseRoutine(targetController, _hapticDuration, _hapticStrength));
+    }
+
+    private IEnumerator HapticPulseRoutine(OVRInput.Controller controller, float duration, float strength)
+    {
+        OVRInput.SetControllerVibration(0.8f, strength, controller);
+        yield return new WaitForSeconds(duration);
+        OVRInput.SetControllerVibration(0f, 0f, controller);
+    }
+
+    private void OnDisable()
+    {
+        OVRInput.Controller targetController = _isLeftHand ? OVRInput.Controller.LTouch : OVRInput.Controller.RTouch;
+        OVRInput.SetControllerVibration(0f, 0f, targetController);
     }
 }
