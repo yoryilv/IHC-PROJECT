@@ -21,9 +21,13 @@ public class LobbyPortalTrigger : MonoBehaviour
 
     private void OnTriggerEnter(Collider other)
     {
-        if (IsPlayer(other) && popUpSeleccion != null)
+        // Verifica el objeto directo o la raíz del prefab
+        if (other.CompareTag("Player") || other.transform.root.CompareTag("Player"))
         {
-            popUpSeleccion.SetActive(true);
+            if (popUpSeleccion != null)
+            {
+                popUpSeleccion.SetActive(true);
+            }
         }
     }
 
